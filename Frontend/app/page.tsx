@@ -90,9 +90,7 @@ function CloudBridgeContent() {
     typeLog(`> Preparing resumable sync for: ${inputValue.substring(0, 30)}...`);
 
     try {
-        // UPDATED: Dynamic URL for Vercel/Render deployment
-        const backendBaseUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8010/proxy";
-        
+        const backendBaseUrl = "https://cloud-bridge-api.onrender.com";
         const response = await fetch(`${backendBaseUrl}/2015-03-31/functions/function/invocations`, {
             method: "POST",
             body: JSON.stringify({ 
