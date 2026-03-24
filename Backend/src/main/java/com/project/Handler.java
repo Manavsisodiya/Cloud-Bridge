@@ -10,80 +10,30 @@ import com.google.api.services.drive.model.File;
 import com.google.auth.http.HttpCredentialsAdapter;
 import com.google.auth.oauth2.AccessToken;
 import com.google.auth.oauth2.GoogleCredentials;
-import com.sun.net.httpserver.HttpServer;
-import com.sun.net.httpserver.HttpExchange;
-import com.google.gson.Gson;
 
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.InetSocketAddress;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
 public class Handler implements RequestHandler<Map<String, Object>, Map<String, Object>> {
 
-    // THIS IS THE MAIN METHOD RENDER IS ASKING FOR
-    public static void main(String[] args) throws Exception {
-        int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
-        
-        // This endpoint matches your frontend's fetch call
-        server.createContext("/2015-03-31/functions/function/invocations", (exchange) -> {
-            // Handle CORS Preflight
-            if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
-                sendCorsHeaders(exchange);
-                exchange.sendResponseHeaders(204, -1);
-                return;
-            }
-
-            try {
-                // Parse the JSON body from the frontend
-                InputStream is = exchange.getRequestBody();
-                String body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-                Map<String, Object> event = new Gson().fromJson(body, Map.class);
-
-                // Trigger the core bridge logic
-                Handler handler = new Handler();
-                handler.handleRequest(event, null);
-
-                // Success Response
-                sendCorsHeaders(exchange);
-                String response = "{\"status\":\"success\", \"message\":\"Bridge Initialized\"}";
-                exchange.sendResponseHeaders(200, response.length());
-                try (OutputStream os = exchange.getResponseBody()) {
-                    os.write(response.getBytes());
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-                exchange.sendResponseHeaders(500, -1);
-            }
-        });
-
-        System.out.println("Cloud Bridge Backend Started on Port: " + port);
-        server.setExecutor(null);
-        server.start();
-    }
-
-    private static void sendCorsHeaders(HttpExchange exchange) {
-        exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
-        exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "POST, OPTIONS");
-        exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type");
-    }
-
     @Override
     public Map<String, Object> handleRequest(Map<String, Object> event, Context context) {
-        System.out.println("BRIDGE_LOG: Sync request received.");
+        context.getLogger().log("JAVA: Bridge Request Received!");
 
         String fileUrl = (String) event.get("fileUrl");
         String userAccessToken = (String) event.get("accessToken");
 
-        // Background thread to handle the heavy streaming
+        Map<String, String> headers = new HashMap<>();
+        headers.put("Content-Type", "application/json");
+        headers.put("Access-Control-Allow-Origin", "*");
+
         new Thread(() -> {
             try {
-                System.out.println("JAVA_STREAM: Initializing stream to Google Drive...");
+                context.getLogger().log("JAVA_BG: Using User OAuth Token for Large Sync...");
+
                 GoogleCredentials credentials = GoogleCredentials.create(new AccessToken(userAccessToken, null));
 
                 Drive driveService = new Drive.Builder(
@@ -98,34 +48,44 @@ public class Handler implements RequestHandler<Map<String, Object>, Map<String, 
                 InputStream in = conn.getInputStream();
 
                 File metadata = new File();
-                metadata.setName("BRIDGE_FILE_" + System.currentTimeMillis());
+                // Changed to octet-stream to be more generic for any file type (not just .jpg)
+                metadata.setName("BRIDGE_RESUMABLE_SYNC_" + System.currentTimeMillis());
                 
-                // Add Folder ID if provided in Render Env
-                String folderId = System.getenv("GOOGLE_DRIVE_FOLDER_ID");
-                if (folderId != null && !folderId.isEmpty()) {
-                    metadata.setParents(java.util.Collections.singletonList(folderId));
-                }
-
                 InputStreamContent content = new InputStreamContent("application/octet-stream", in);
+                
                 Drive.Files.Create insert = driveService.files().create(metadata, content);
                 
-                // Enable Resumable Mode
+                // --- RESUMABLE UPLOAD CONFIGURATION ---
+                // Disable Direct Upload to enable Resumable Mode (Standard for files > 5MB)
                 insert.getMediaHttpUploader().setDirectUploadEnabled(false);
+                
+                // Set Chunk Size to 8MB. This protects your MacBook's RAM.
+                // The backend only holds 8MB of the file at any given time.
                 insert.getMediaHttpUploader().setChunkSize(8 * 1024 * 1024); 
 
+                // Progress Listener to see the status in Docker logs
                 insert.getMediaHttpUploader().setProgressListener(uploader -> {
-                    System.out.println("Upload Progress: " + (int)(uploader.getProgress() * 100) + "%");
+                    try {
+                        context.getLogger().log("Upload Progress: " + (uploader.getProgress() * 100) + "%");
+                    } catch (Exception e) {
+                        // Progress calculation error, non-fatal
+                    }
                 });
                 
-                insert.execute();
-                System.out.println("JAVA_SUCCESS: File successfully bridged to Drive.");
+                File uploadedFile = insert.execute();
+                context.getLogger().log("JAVA_SUCCESS: Big File saved! ID: " + uploadedFile.getId());
 
             } catch (Exception e) {
-                System.err.println("JAVA_ERROR: " + e.getMessage());
+                context.getLogger().log("JAVA_FATAL_ERROR: " + e.getMessage());
                 e.printStackTrace();
             }
         }).start();
 
-        return new HashMap<>();
+        Map<String, Object> response = new HashMap<>();
+        response.put("statusCode", 200);
+        response.put("headers", headers);
+        response.put("body", "{\"status\": \"success\", \"message\": \"Resumable OAuth Bridge Active.\"}");
+
+        return response;
     }
 }
