@@ -1,12 +1,10 @@
-FROM eclipse-temurin:17-jdk-alpine
-WORKDIR /app
+FROM public.ecr.aws/lambda/java:17
 
-# Copy the jar
-COPY target/s3-to-drive-bridge-1.0-SNAPSHOT.jar app.jar
+# Copy the JAR into the container
+COPY target/s3-to-drive-bridge-1.0-SNAPSHOT.jar /tmp/app.jar
 
-# Expose port 8080
-EXPOSE 8080
+# Unzip the JAR directly into the task root so the 'com' folder is at the top level
+RUN jar -xf /tmp/app.jar
 
-# FORCED START: We manually point to the Handler class 
-# (Make sure "com.project.Handler" matches your actual package and class name)
-ENTRYPOINT ["java", "-cp", "app.jar", "com.project.Handler"]
+# Set the entry point (must match your package exactly)
+CMD [ "com.project.Handler::handleRequest" ]
