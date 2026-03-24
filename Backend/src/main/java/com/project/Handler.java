@@ -25,13 +25,14 @@ import java.util.Map;
 
 public class Handler implements RequestHandler<Map<String, Object>, Map<String, Object>> {
 
-    // --- RENDER STARTUP METHOD ---
+    // THIS IS THE MAIN METHOD RENDER IS ASKING FOR
     public static void main(String[] args) throws Exception {
         int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         
-        // This matches the path in your frontend page.tsx
+        // This endpoint matches your frontend's fetch call
         server.createContext("/2015-03-31/functions/function/invocations", (exchange) -> {
+            // Handle CORS Preflight
             if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
                 sendCorsHeaders(exchange);
                 exchange.sendResponseHeaders(204, -1);
@@ -39,18 +40,18 @@ public class Handler implements RequestHandler<Map<String, Object>, Map<String, 
             }
 
             try {
-                // Read the JSON body from the frontend
+                // Parse the JSON body from the frontend
                 InputStream is = exchange.getRequestBody();
                 String body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
                 Map<String, Object> event = new Gson().fromJson(body, Map.class);
 
-                // Execute the existing logic
+                // Trigger the core bridge logic
                 Handler handler = new Handler();
                 handler.handleRequest(event, null);
 
-                // Send success back to frontend
+                // Success Response
                 sendCorsHeaders(exchange);
-                String response = "{\"status\":\"success\"}";
+                String response = "{\"status\":\"success\", \"message\":\"Bridge Initialized\"}";
                 exchange.sendResponseHeaders(200, response.length());
                 try (OutputStream os = exchange.getResponseBody()) {
                     os.write(response.getBytes());
@@ -61,7 +62,7 @@ public class Handler implements RequestHandler<Map<String, Object>, Map<String, 
             }
         });
 
-        System.out.println("Cloud Bridge Backend Live on Port " + port);
+        System.out.println("Cloud Bridge Backend Started on Port: " + port);
         server.setExecutor(null);
         server.start();
     }
@@ -74,17 +75,15 @@ public class Handler implements RequestHandler<Map<String, Object>, Map<String, 
 
     @Override
     public Map<String, Object> handleRequest(Map<String, Object> event, Context context) {
-        // We handle null context for Render environment
-        String msgPrefix = (context != null) ? "JAVA: " : "RENDER_LOG: ";
-        System.out.println(msgPrefix + "Bridge Request Received!");
+        System.out.println("BRIDGE_LOG: Sync request received.");
 
         String fileUrl = (String) event.get("fileUrl");
         String userAccessToken = (String) event.get("accessToken");
 
+        // Background thread to handle the heavy streaming
         new Thread(() -> {
             try {
-                System.out.println("JAVA_BG: Starting Resumable Sync...");
-
+                System.out.println("JAVA_STREAM: Initializing stream to Google Drive...");
                 GoogleCredentials credentials = GoogleCredentials.create(new AccessToken(userAccessToken, null));
 
                 Drive driveService = new Drive.Builder(
@@ -99,36 +98,34 @@ public class Handler implements RequestHandler<Map<String, Object>, Map<String, 
                 InputStream in = conn.getInputStream();
 
                 File metadata = new File();
-                metadata.setName("BRIDGE_SYNC_" + System.currentTimeMillis());
+                metadata.setName("BRIDGE_FILE_" + System.currentTimeMillis());
                 
-                // Set folder if env variable exists
+                // Add Folder ID if provided in Render Env
                 String folderId = System.getenv("GOOGLE_DRIVE_FOLDER_ID");
                 if (folderId != null && !folderId.isEmpty()) {
-                    java.util.List<String> parents = java.util.Collections.singletonList(folderId);
-                    metadata.setParents(parents);
+                    metadata.setParents(java.util.Collections.singletonList(folderId));
                 }
 
                 InputStreamContent content = new InputStreamContent("application/octet-stream", in);
                 Drive.Files.Create insert = driveService.files().create(metadata, content);
                 
+                // Enable Resumable Mode
                 insert.getMediaHttpUploader().setDirectUploadEnabled(false);
                 insert.getMediaHttpUploader().setChunkSize(8 * 1024 * 1024); 
 
                 insert.getMediaHttpUploader().setProgressListener(uploader -> {
-                    System.out.println("Upload Progress: " + (uploader.getProgress() * 100) + "%");
+                    System.out.println("Upload Progress: " + (int)(uploader.getProgress() * 100) + "%");
                 });
                 
-                File uploadedFile = insert.execute();
-                System.out.println("JAVA_SUCCESS: Saved ID: " + uploadedFile.getId());
+                insert.execute();
+                System.out.println("JAVA_SUCCESS: File successfully bridged to Drive.");
 
             } catch (Exception e) {
-                System.err.println("JAVA_FATAL_ERROR: " + e.getMessage());
+                System.err.println("JAVA_ERROR: " + e.getMessage());
                 e.printStackTrace();
             }
         }).start();
 
-        Map<String, Object> response = new HashMap<>();
-        response.put("statusCode", 200);
-        return response;
+        return new HashMap<>();
     }
 }
