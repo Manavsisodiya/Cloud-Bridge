@@ -90,7 +90,7 @@ function CloudBridgeContent() {
     typeLog(`> Preparing resumable sync for: ${inputValue.substring(0, 30)}...`);
 
     try {
-        const backendBaseUrl = "https://cloud-bridge-api.onrender.com";
+        const backendBaseUrl = "https://cloud-bridge-api.onrender.com" || process.env.NEXT_PUBLIC_BACKEND_URL;
         const response = await fetch(`${backendBaseUrl}/2015-03-31/functions/function/invocations`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
