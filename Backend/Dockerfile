@@ -1,10 +1,14 @@
-FROM public.ecr.aws/lambda/java:17
+# Use a standard Java 17 runtime instead of Lambda
+FROM eclipse-temurin:17-jdk-alpine
 
-# Copy the JAR into the container
-COPY target/s3-to-drive-bridge-1.0-SNAPSHOT.jar /tmp/app.jar
+# Set the working directory
+WORKDIR /app
 
-# Unzip the JAR directly into the task root so the 'com' folder is at the top level
-RUN jar -xf /tmp/app.jar
+# Copy the jar file (Ensure this name matches your SNAPSHOT jar name)
+COPY target/s3-to-drive-bridge-1.0-SNAPSHOT.jar app.jar
 
-# Set the entry point (must match your package exactly)
-CMD [ "com.project.Handler::handleRequest" ]
+# Expose the port Spring Boot uses
+EXPOSE 8080
+
+# Run the jar as a standard web application
+ENTRYPOINT ["java", "-jar", "app.jar"]
